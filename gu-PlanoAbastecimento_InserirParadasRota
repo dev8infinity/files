@@ -1,0 +1,141 @@
+DECLARE @ID_ROTA_MONISAT VARCHAR(MAX) = {{_id_rota_monisat}};
+-- '8897';
+DECLARE @Json NVARCHAR(MAX) = {{_json}};
+-- '[
+--     {
+--         "latitude": "-12.6955474",
+--         "longitude": "-38.3238695"
+--     },
+--     {
+--         "latitude": "-23.164373",
+--         "longitude": "-46.943509"
+--     }
+-- ]';
+
+
+DECLARE @Erro NVARCHAR(MAX) = '';
+
+-- Criar tabela temporária para armazenar os dados do JSON
+DECLARE @TempCoordinates TABLE (
+    ID INT IDENTITY(1,1),
+    LATITUDE FLOAT,
+    LONGITUDE FLOAT
+);
+
+-- Converter JSON em tabela e inserir os dados na tabela temporária
+BEGIN TRY
+    INSERT INTO @TempCoordinates (LATITUDE, LONGITUDE)
+    SELECT 
+        JSON_VALUE(value, '$.latitude'),
+        JSON_VALUE(value, '$.longitude')
+    FROM OPENJSON(@Json);
+END TRY
+BEGIN CATCH
+    SET @Erro = 'ERRO: Falha ao converter JSON em tabela. Detalhes: ' + ERROR_MESSAGE();
+END CATCH;
+
+-- Criar tabela de saída para armazenar os resultados antes do insert
+DECLARE @ResultTable TABLE (
+    HORTOL TIME,
+    NUMPAR INT,
+    CODMUN INT,
+    CODMPA INT,
+    RODHOR INT, -- Referência ao ID da rota
+    DATATU SMALLDATETIME,
+    USUATU VARCHAR(MAX),
+    CODPAR INT NULL
+);
+
+-- Buscar o ID da rota correspondente na tabela RODHOR
+DECLARE @RODHOR INT;
+SELECT @RODHOR = CODHOR FROM RODHOR WHERE CODINT = CAST(@ID_ROTA_MONISAT AS INT);
+
+-- Se não encontrar a rota, registrar erro
+IF @RODHOR IS NULL
+BEGIN
+    SET @Erro = 'ERRO: ID da rota não encontrado na tabela RODHOR!';
+END
+
+-- Variáveis auxiliares
+DECLARE @LATITUDE FLOAT, @LONGITUDE FLOAT, @NUMPAR INT = 1, @Municipio VARCHAR(200), @CODMUN INT, @CODPAR INT;
+DECLARE @Aviso NVARCHAR(MAX) = '';
+
+-- Cursor para percorrer os pontos extraídos do JSON
+DECLARE coord_cursor CURSOR FOR 
+SELECT LATITUDE, LONGITUDE FROM @TempCoordinates ORDER BY ID;
+
+BEGIN TRY
+    OPEN coord_cursor;
+    FETCH NEXT FROM coord_cursor INTO @LATITUDE, @LONGITUDE;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Buscar o município mais próximo baseado na menor distância geoespacial
+        SELECT TOP 1 
+            @Municipio = DESCRI,
+            @CODMUN = CODMUN
+        FROM rodmun
+        WHERE LATITU IS NOT NULL AND LONGIT IS NOT NULL
+        ORDER BY geography::Point(LATITU, LONGIT, 4326).STDistance(geography::Point(@LATITUDE, @LONGITUDE, 4326)), CODMUN;
+
+        -- Verifica se encontrou um município
+        IF @CODMUN IS NULL
+        BEGIN
+            SET @Aviso = @Aviso + 'AVISO: Nenhum município encontrado para LAT: ' + CAST(@LATITUDE AS VARCHAR) + ', LONG: ' + CAST(@LONGITUDE AS VARCHAR) + ' | ';
+        END
+
+        -- Buscar CODCLIFOR na tabela RODCLI caso LATITU e LONGIT sejam iguais
+        SET @CODPAR = NULL;
+
+        SELECT TOP 1 @CODPAR = CODCLIFOR
+        FROM RODCLI
+        WHERE LATITU = @LATITUDE AND LONGIT = @LONGITUDE;
+
+        -- Inserir na tabela temporária antes do insert
+        INSERT INTO @ResultTable (HORTOL, NUMPAR, CODMUN, CODMPA, RODHOR, DATATU, USUATU, CODPAR)
+        VALUES ('23:59', @NUMPAR, @CODMUN, 3, @RODHOR, GETDATE(), 'BALM', @CODPAR);
+
+        -- Incrementar NUMPAR
+        SET @NUMPAR = @NUMPAR + 1;
+
+        -- Buscar próximo registro
+        FETCH NEXT FROM coord_cursor INTO @LATITUDE, @LONGITUDE;
+    END
+
+    CLOSE coord_cursor;
+    DEALLOCATE coord_cursor;
+
+END TRY
+BEGIN CATCH
+    SET @Erro = 'ERRO: Ocorreu um erro ao processar os pontos do JSON. Detalhes: ' + ERROR_MESSAGE();
+END CATCH;
+
+-- Tentar inserir os dados na tabela RODPAH
+BEGIN TRY
+    INSERT INTO RODPAH (HORTOL, NUMPAR, CODMUN, CODMPA, CODHOR, DATATU, USUATU, CODPAR)
+    SELECT HORTOL, NUMPAR, CODMUN, CODMPA, RODHOR, DATATU, USUATU, CODPAR FROM @ResultTable;
+
+    -- ?? **Verificar se algo foi inserido**
+    IF @@ROWCOUNT = 0
+    BEGIN
+        SET @Erro = 'ERRO: Nenhum registro foi inserido na tabela RODPAH. Possíveis causas: ' +
+                    '1 Nenhum município correspondente encontrado. ' +
+                    '2 Coordenadas não encontradas na tabela RODCLI. ' +
+                    '3 Alguma restrição impediu a inserção. ' +
+                    CASE WHEN @Aviso <> '' THEN ' | ' + @Aviso ELSE '' END;
+    END
+END TRY
+BEGIN CATCH
+    -- Captura erro de chave primária e outros erros de inserção
+    SET @Erro = 'ERRO: Ocorreu um erro durante a inserção dos dados. Detalhes: ' + ERROR_MESSAGE();
+END CATCH;
+
+-- Se não houver erro, definir sucesso
+IF @Erro = ''
+BEGIN
+    SET @Erro = 'SUCESSO: Registros inseridos com sucesso para a rota ' + CAST(@RODHOR AS VARCHAR) + '.' + 
+                CASE WHEN @Aviso <> '' THEN ' | ' + @Aviso ELSE '' END;
+END
+
+-- ?? **Agora sempre chega ao final e retorna @Erro**
+SELECT @Erro AS erro;
