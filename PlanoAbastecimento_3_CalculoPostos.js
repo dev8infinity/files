@@ -30,7 +30,31 @@ function main() {
   const abastecimentos = [];
   let totalAbastecido = 0;
 
-  const calcularAbastecimento = (qtdNecessariaAbastecer, indicePostoAtual = 0, minDistanciaOrigem = 0, maxDistanciaOrigem = Infinity) => {
+  const abasteceuSuficiente = calcularAbastecimento(quantidadeNecessaria);
+
+  metadata.Oerror = "";
+  metadata.erro = metadata.erro || "";
+
+  checarErros(abasteceuSuficiente, quantidadeNecessaria, totalAbastecido, abastecimentos);
+  DataFile.Stage = 3;
+
+  if (!metadata.erro) {
+    importar(abastecimentos.filter(a => !a.foraDoConvenio));
+  }
+  if (metadata.erro) {
+    metadata.Oerror = JSON.stringify(
+      {
+        abastecimentos,
+        quantidadeNecessaria,
+        totalAbastecido,
+      }
+    );
+    DataFile.Stage = 2;
+  } else {
+    metadata.OpostosParaAbastecer = JSON.stringify(abastecimentos);
+  }
+
+  function calcularAbastecimento(qtdNecessariaAbastecer, indicePostoAtual = 0, minDistanciaOrigem = 0, maxDistanciaOrigem = Infinity) {
     if (qtdNecessariaAbastecer <= 0) {
         return true; /** Já abastecemos o suficiente */
     }
@@ -118,31 +142,6 @@ function main() {
         maxDistanciaOrigem
     );
   }
-
-  const abasteceuSuficiente = calcularAbastecimento(quantidadeNecessaria);
-
-  metadata.Oerror = "";
-  metadata.erro = metadata.erro || "";
-
-  checarErros(abasteceuSuficiente, quantidadeNecessaria, totalAbastecido, abastecimentos);
-  DataFile.Stage = 3;
-
-  if (!metadata.erro) {
-    importar(abastecimentos.filter(a => !a.foraDoConvenio));
-  }
-  if (metadata.erro) {
-    metadata.Oerror = JSON.stringify(
-      {
-        abastecimentos,
-        quantidadeNecessaria,
-        totalAbastecido,
-      }
-    );
-    DataFile.Stage = 2;
-  }
-
-  metadata.OpostosParaAbastecer = JSON.stringify(abastecimentos);
-
 }
 function importar(abastecimentos) {
   if (abastecimentos.length == 0) {
